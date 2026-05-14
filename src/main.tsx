@@ -1,7 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { BarChart3, Bell, CheckCircle2, Clock, Eye, ImageOff, KeyRound, Pause, Play, RefreshCw, Settings, ShieldCheck, Square, X } from "lucide-react";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import "./styles.css";
 import { backend, type EvidenceDay, type EvidenceSample, type SessionDetail } from "./tauri";
 
@@ -82,11 +81,6 @@ function formatDateTime(value: string) {
   return date.toLocaleString("zh-CN", { hour12: false });
 }
 
-function screenshotSrc(sample: EvidenceSample) {
-  if (!sample.screenshot_path || !sample.screenshot_exists || !("__TAURI_INTERNALS__" in window)) return null;
-  return convertFileSrc(sample.screenshot_path);
-}
-
 function App() {
   const [tab, setTab] = React.useState<Tab>("today");
   const [task, setTask] = React.useState("英语阅读");
@@ -95,6 +89,7 @@ function App() {
   const [settings, setSettings] = React.useState<SettingsState>(defaultSettings);
   const [message, setMessage] = React.useState("");
   const [isBusy, setIsBusy] = React.useState(false);
+  const [countdown, setCountdown] = React.useState<number | null>(null);
 
   const refresh = React.useCallback(async () => {
     const [nextSummary, nextSettings, nextEvidence] = await Promise.all([backend.getTodaySummary(), backend.getSettings(), backend.getEvidenceDay()]);
@@ -121,6 +116,17 @@ function App() {
     } finally {
       setIsBusy(false);
     }
+  }
+
+  async function startWithCountdown() {
+    if (!task.trim() || isBusy || countdown !== null) return;
+    setMessage("");
+    for (const value of [3, 2, 1]) {
+      setCountdown(value);
+      await new Promise((resolve) => window.setTimeout(resolve, 700));
+    }
+    setCountdown(null);
+    await runAction(() => backend.startSession(task.trim()), "已开始学习");
   }
 
   const active = summary?.active_session;
@@ -186,7 +192,7 @@ function App() {
 
               <div className="actions">
                 {!active && (
-                  <button className="primary" disabled={isBusy || !task.trim()} onClick={() => runAction(() => backend.startSession(task.trim()), "已开始学习")}>
+                  <button className="primary" disabled={isBusy || countdown !== null || !task.trim()} onClick={startWithCountdown}>
                     <Play size={18} />
                     开始
                   </button>
@@ -269,6 +275,14 @@ function App() {
           />
         )}
       </section>
+      {countdown !== null && (
+        <div className="countdownOverlay" aria-live="assertive">
+          <div>
+            <span>准备开始</span>
+            <strong>{countdown}</strong>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
@@ -430,7 +444,7 @@ function EvidenceView({
 }
 
 function ScreenshotThumb({ sample }: { sample: EvidenceSample }) {
-  const src = screenshotSrc(sample);
+  const src = useScreenshotSrc(sample);
   if (src) return <img className="thumb" src={src} alt="采样截图" />;
   return (
     <div className="thumb missingThumb">
@@ -451,7 +465,7 @@ function EvidenceDetail({
   correct: (sample: EvidenceSample, classification: Classification) => Promise<void>;
   busy: boolean;
 }) {
-  const src = screenshotSrc(sample);
+  const src = useScreenshotSrc(sample);
   return (
     <div className="modalBackdrop" role="presentation" onClick={close}>
       <section className="detailModal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
@@ -505,6 +519,27 @@ function EvidenceDetail({
       </section>
     </div>
   );
+}
+
+function useScreenshotSrc(sample: EvidenceSample) {
+  const [src, setSrc] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    let cancelled = false;
+    setSrc(null);
+    if (!sample.screenshot_path || !sample.screenshot_exists) return;
+    backend
+      .getScreenshotDataUrl(sample.screenshot_path)
+      .then((value) => {
+        if (!cancelled) setSrc(value);
+      })
+      .catch(() => {
+        if (!cancelled) setSrc(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sample.id, sample.screenshot_path, sample.screenshot_exists]);
+  return src;
 }
 
 function DetailItem({ label, value }: { label: string; value: string }) {
@@ -582,7 +617,7 @@ function SettingsView({
       <div className="switchRow">
         <div>
           <strong>AI 分析</strong>
-          <span>仅在非完全本地模式下调用</span>
+          <span>填入 OpenAI API Key，并选择本地优先或云端增强后才会调用</span>
         </div>
         <button className={settings.ai_enabled ? "toggle on" : "toggle"} onClick={() => setSettings({ ...settings, ai_enabled: !settings.ai_enabled })}>
           <Bell size={16} />
@@ -606,6 +641,11 @@ function SettingsView({
         AI 模型
         <input value={settings.openai_model} onChange={(event) => setSettings({ ...settings, openai_model: event.target.value })} />
       </label>
+
+      <div className="aiHelp full">
+        <strong>接入 AI 需要三步</strong>
+        <span>1. 在 OpenAI 控制台创建 API Key；2. 粘贴到上方输入框；3. 打开 AI 分析，并保持隐私模式不是“完全本地”。</span>
+      </div>
 
       <button className="primary save" disabled={busy} onClick={save}>
         保存设置

@@ -124,6 +124,7 @@ export const backend = {
   getEvidenceDay: (date?: string) => call<EvidenceDay>("get_evidence_day", { date }, fallbackEvidence),
   getSessionDetail: (sessionId: number) => call<SessionDetail>("get_session_detail", { sessionId }),
   correctSample: (sampleId: number, classification: Classification) => call<EvidenceSample>("correct_sample", { sampleId, classification }),
+  getScreenshotDataUrl: (path: string) => call<string | null>("get_screenshot_data_url", { path }, null),
   getSettings: () => call("get_settings", undefined, fallbackSettings),
   saveSettings: (settings: unknown) => call("save_settings", { settings }),
   startSession: (task: string) => call("start_session", { task }),

@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
+use base64::Engine;
 use chrono::Local;
 use db::Db;
 use models::{Classification, DailySummary, EvidenceDay, EvidenceSample, SessionDetail, Settings, StudySession};
@@ -67,6 +68,30 @@ fn correct_sample(sample_id: i64, classification: Classification, state: State<'
     .correct_sample(sample_id, classification)
     .map_err(error_string)?
     .ok_or_else(|| "采样记录不存在".to_string())
+}
+
+#[tauri::command]
+fn get_screenshot_data_url(path: String, state: State<'_, AppState>) -> Result<Option<String>, String> {
+  let db = state.db.lock().map_err(lock_error)?;
+  let screenshots_dir = db.data_dir.join("screenshots");
+  let requested = PathBuf::from(path);
+  if !requested.exists() {
+    return Ok(None);
+  }
+
+  let screenshots_dir = screenshots_dir.canonicalize().map_err(|error| error_string(error.into()))?;
+  let requested = requested.canonicalize().map_err(|error| error_string(error.into()))?;
+  if !requested.starts_with(&screenshots_dir) {
+    return Err("截图路径不在允许访问的目录内".to_string());
+  }
+
+  let bytes = std::fs::read(&requested).with_context(|| format!("failed to read screenshot {}", requested.display())).map_err(error_string)?;
+  let mime = match requested.extension().and_then(|value| value.to_str()).unwrap_or_default().to_ascii_lowercase().as_str() {
+    "png" => "image/png",
+    _ => "image/jpeg",
+  };
+  let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+  Ok(Some(format!("data:{mime};base64,{encoded}")))
 }
 
 #[tauri::command]
@@ -222,6 +247,7 @@ pub fn run() {
       get_evidence_day,
       get_session_detail,
       correct_sample,
+      get_screenshot_data_url,
       start_session,
       pause_session,
       resume_session,

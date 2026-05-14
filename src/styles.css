@@ -362,6 +362,39 @@ select:focus {
   padding: 12px 14px;
 }
 
+.countdownOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  background: rgba(246, 244, 239, 0.76);
+  backdrop-filter: blur(4px);
+}
+
+.countdownOverlay div {
+  width: 220px;
+  height: 220px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  border: 1px solid #cfd8cf;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 24px 70px rgba(11, 18, 14, 0.18);
+}
+
+.countdownOverlay span {
+  color: #667166;
+  font-size: 18px;
+}
+
+.countdownOverlay strong {
+  font-size: 96px;
+  line-height: 1;
+}
+
 .panelHeader {
   display: flex;
   align-items: center;
@@ -639,6 +672,20 @@ select:focus {
   background: #e7f2e8;
   color: #206a4b;
   font-weight: 700;
+}
+
+.aiHelp {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid #d8e3d6;
+  border-radius: 8px;
+  background: #f5faf4;
+}
+
+.aiHelp span {
+  color: #526054;
+  line-height: 1.6;
 }
 
 @media (max-width: 860px) {

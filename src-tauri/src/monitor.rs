@@ -20,6 +20,7 @@ pub fn classify_locally(task: &str, window: &WindowInfo) -> AiDecision {
     .filter(|part| part.chars().count() >= 2)
     .map(|part| part.to_lowercase())
     .collect::<Vec<_>>();
+  let task_hints = ["英语", "阅读", "数学", "物理", "化学", "语文", "论文", "课程", "作业", "背单词", "编程", "代码", "复习"];
 
   let distracted_keywords = [
     "douyin", "抖音", "tiktok", "steam", "game", "游戏", "netflix", "微博", "小红书", "reddit", "twitter", "x.com",
@@ -34,7 +35,7 @@ pub fn classify_locally(task: &str, window: &WindowInfo) -> AiDecision {
     };
   }
 
-  if task_tokens.iter().any(|token| title.contains(token)) {
+  if task_tokens.iter().any(|token| title.contains(token)) || task_hints.iter().any(|hint| task.contains(hint) && text.contains(hint)) {
     return AiDecision {
       classification: Classification::Focused,
       confidence: 0.84,
