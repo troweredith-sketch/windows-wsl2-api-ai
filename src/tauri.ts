@@ -70,6 +70,7 @@ type FallbackSettings = {
   ai_enabled: boolean;
   privacy_mode: "local_first" | "cloud_enhanced" | "local_only";
   openai_api_key: string;
+  openai_api_base_url: string;
   openai_model: string;
 };
 
@@ -93,6 +94,7 @@ const fallbackSettings: FallbackSettings = {
   ai_enabled: false,
   privacy_mode: "local_first",
   openai_api_key: "",
+  openai_api_base_url: "https://api.openai.com/v1",
   openai_model: "gpt-4.1-mini",
 };
 

@@ -8,6 +8,8 @@ pub struct Settings {
   pub ai_enabled: bool,
   pub privacy_mode: PrivacyMode,
   pub openai_api_key: String,
+  #[serde(default = "default_openai_api_base_url")]
+  pub openai_api_base_url: String,
   pub openai_model: String,
 }
 
@@ -20,9 +22,14 @@ impl Default for Settings {
       ai_enabled: false,
       privacy_mode: PrivacyMode::LocalFirst,
       openai_api_key: String::new(),
+      openai_api_base_url: default_openai_api_base_url(),
       openai_model: "gpt-4.1-mini".to_string(),
     }
   }
+}
+
+pub fn default_openai_api_base_url() -> String {
+  "https://api.openai.com/v1".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

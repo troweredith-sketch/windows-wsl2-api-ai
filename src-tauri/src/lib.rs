@@ -12,7 +12,7 @@ use anyhow::{anyhow, Context, Result};
 use base64::Engine;
 use chrono::Local;
 use db::Db;
-use models::{Classification, DailySummary, EvidenceDay, EvidenceSample, SessionDetail, Settings, StudySession};
+use models::{default_openai_api_base_url, Classification, DailySummary, EvidenceDay, EvidenceSample, SessionDetail, Settings, StudySession};
 use tauri::{AppHandle, Manager, State};
 
 struct RuntimeState {
@@ -31,7 +31,12 @@ fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
 }
 
 #[tauri::command]
-fn save_settings(settings: Settings, state: State<'_, AppState>) -> Result<(), String> {
+fn save_settings(mut settings: Settings, state: State<'_, AppState>) -> Result<(), String> {
+  if settings.openai_api_base_url.trim().is_empty() {
+    settings.openai_api_base_url = default_openai_api_base_url();
+  } else {
+    settings.openai_api_base_url = settings.openai_api_base_url.trim().trim_end_matches('/').to_string();
+  }
   let db = state.db.lock().map_err(lock_error)?;
   db.save_settings(&settings).map_err(error_string)?;
   db.cleanup_screenshots(settings.screenshot_retention_days).map_err(error_string)?;

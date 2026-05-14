@@ -52,9 +52,10 @@ impl AiAnalyzer {
       "temperature": 0
     });
 
+    let endpoint = responses_endpoint(&settings.openai_api_base_url);
     let value: serde_json::Value = self
       .client
-      .post("https://api.openai.com/v1/responses")
+      .post(&endpoint)
       .bearer_auth(settings.openai_api_key.trim())
       .json(&body)
       .send()
@@ -99,4 +100,16 @@ fn extract_output_text(value: &serde_json::Value) -> Option<&str> {
       .flat_map(|item| item.get("content").and_then(|content| content.as_array()).into_iter().flatten())
       .find_map(|content| content.get("text").and_then(|text| text.as_str()))
   })
+}
+
+fn responses_endpoint(base_url: &str) -> String {
+  let trimmed = base_url.trim().trim_end_matches('/');
+  if trimmed.is_empty() {
+    return "https://api.openai.com/v1/responses".to_string();
+  }
+  if trimmed.ends_with("/responses") {
+    trimmed.to_string()
+  } else {
+    format!("{trimmed}/responses")
+  }
 }

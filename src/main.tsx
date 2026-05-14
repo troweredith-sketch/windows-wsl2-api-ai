@@ -21,6 +21,7 @@ type SettingsState = {
   ai_enabled: boolean;
   privacy_mode: "local_first" | "cloud_enhanced" | "local_only";
   openai_api_key: string;
+  openai_api_base_url: string;
   openai_model: string;
 };
 
@@ -47,6 +48,7 @@ const defaultSettings: SettingsState = {
   ai_enabled: false,
   privacy_mode: "local_first",
   openai_api_key: "",
+  openai_api_base_url: "https://api.openai.com/v1",
   openai_model: "gpt-4.1-mini",
 };
 
@@ -637,14 +639,22 @@ function SettingsView({
           placeholder="sk-..."
         />
       </label>
+      <label className="field full">
+        Responses API 地址
+        <input
+          value={settings.openai_api_base_url}
+          onChange={(event) => setSettings({ ...settings, openai_api_base_url: event.target.value })}
+          placeholder="https://api.openai.com/v1"
+        />
+      </label>
       <label className="field">
         AI 模型
         <input value={settings.openai_model} onChange={(event) => setSettings({ ...settings, openai_model: event.target.value })} />
       </label>
 
       <div className="aiHelp full">
-        <strong>接入 AI 需要三步</strong>
-        <span>1. 在 OpenAI 控制台创建 API Key；2. 粘贴到上方输入框；3. 打开 AI 分析，并保持隐私模式不是“完全本地”。</span>
+        <strong>接入 AI 需要四步</strong>
+        <span>1. 填 API Key；2. 填兼容 Responses API 的地址，例如 https://api.openai.com/v1 或第三方 /v1 地址；3. 填模型名；4. 打开 AI 分析，并保持隐私模式不是“完全本地”。</span>
       </div>
 
       <button className="primary save" disabled={busy} onClick={save}>
