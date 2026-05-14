@@ -1,8 +1,9 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { Clock, Pause, Play, Square, BarChart3, Settings, ShieldCheck, Bell, KeyRound, RefreshCw } from "lucide-react";
+import { BarChart3, Bell, CheckCircle2, Clock, Eye, ImageOff, KeyRound, Pause, Play, RefreshCw, Settings, ShieldCheck, Square, X } from "lucide-react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import "./styles.css";
-import { backend } from "./tauri";
+import { backend, type EvidenceDay, type EvidenceSample, type SessionDetail } from "./tauri";
 
 type Classification = "focused" | "distracted" | "idle" | "unknown";
 
@@ -37,6 +38,9 @@ type DailySummary = {
   active_session?: StudySession | null;
 };
 
+type Tab = "today" | "evidence" | "report" | "settings";
+type ClassificationFilter = "all" | Classification;
+
 const defaultSettings: SettingsState = {
   sample_interval_seconds: 20,
   distraction_threshold_seconds: 30,
@@ -66,18 +70,37 @@ function clsLabel(value: Classification) {
   return labels[value];
 }
 
+function formatTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value.slice(11, 19);
+  return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+}
+
+function formatDateTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("zh-CN", { hour12: false });
+}
+
+function screenshotSrc(sample: EvidenceSample) {
+  if (!sample.screenshot_path || !sample.screenshot_exists || !("__TAURI_INTERNALS__" in window)) return null;
+  return convertFileSrc(sample.screenshot_path);
+}
+
 function App() {
-  const [tab, setTab] = React.useState<"today" | "report" | "settings">("today");
+  const [tab, setTab] = React.useState<Tab>("today");
   const [task, setTask] = React.useState("英语阅读");
   const [summary, setSummary] = React.useState<DailySummary | null>(null);
+  const [evidence, setEvidence] = React.useState<EvidenceDay | null>(null);
   const [settings, setSettings] = React.useState<SettingsState>(defaultSettings);
   const [message, setMessage] = React.useState("");
   const [isBusy, setIsBusy] = React.useState(false);
 
   const refresh = React.useCallback(async () => {
-    const [nextSummary, nextSettings] = await Promise.all([backend.getTodaySummary(), backend.getSettings()]);
+    const [nextSummary, nextSettings, nextEvidence] = await Promise.all([backend.getTodaySummary(), backend.getSettings(), backend.getEvidenceDay()]);
     setSummary(nextSummary);
     setSettings({ ...defaultSettings, ...nextSettings });
+    setEvidence(nextEvidence);
   }, []);
 
   React.useEffect(() => {
@@ -121,6 +144,10 @@ function App() {
             <Clock size={18} />
             今日
           </button>
+          <button className={tab === "evidence" ? "active" : ""} onClick={() => setTab("evidence")}>
+            <Eye size={18} />
+            证据
+          </button>
           <button className={tab === "report" ? "active" : ""} onClick={() => setTab("report")}>
             <BarChart3 size={18} />
             日报
@@ -136,7 +163,7 @@ function App() {
         <header className="topbar">
           <div>
             <p>{summary?.date ?? "今天"}</p>
-            <h1>{tab === "today" ? "今日自习" : tab === "report" ? "学习日报" : "偏好设置"}</h1>
+            <h1>{tab === "today" ? "今日自习" : tab === "evidence" ? "证据时间线" : tab === "report" ? "学习日报" : "偏好设置"}</h1>
           </div>
           <button className="iconButton" title="刷新" onClick={() => refresh()}>
             <RefreshCw size={18} />
@@ -192,8 +219,19 @@ function App() {
               <Metric label="分心次数" value={`${summary?.distraction_count ?? 0}次`} />
             </div>
 
+            <RecentEvidence samples={evidence?.samples.slice(0, 3) ?? []} openEvidence={() => setTab("evidence")} />
+
             {message && <div className="toast">{message}</div>}
           </section>
+        )}
+
+        {tab === "evidence" && (
+          <EvidenceView
+            evidence={evidence}
+            refresh={refresh}
+            setMessage={setMessage}
+            message={message}
+          />
         )}
 
         {tab === "report" && (
@@ -232,6 +270,249 @@ function App() {
         )}
       </section>
     </main>
+  );
+}
+
+function RecentEvidence({ samples, openEvidence }: { samples: EvidenceSample[]; openEvidence: () => void }) {
+  return (
+    <div className="widePanel compactPanel">
+      <div className="panelHeader">
+        <h2>最近判断</h2>
+        <button className="ghostButton" onClick={openEvidence}>
+          <Eye size={16} />
+          查看全部
+        </button>
+      </div>
+      {samples.length === 0 ? (
+        <p className="muted">开始学习后，这里会显示最近的窗口判断。</p>
+      ) : (
+        <div className="recentList">
+          {samples.map((sample) => (
+            <div className="recentItem" key={sample.id}>
+              <span className={`status mini ${sample.effective_classification}`}>{clsLabel(sample.effective_classification)}</span>
+              <div>
+                <strong>{sample.app_name || "未知应用"}</strong>
+                <span>{sample.window_title || "无窗口标题"}</span>
+              </div>
+              <time>{formatTime(sample.captured_at)}</time>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EvidenceView({
+  evidence,
+  refresh,
+  setMessage,
+  message,
+}: {
+  evidence: EvidenceDay | null;
+  refresh: () => Promise<void>;
+  setMessage: (message: string) => void;
+  message: string;
+}) {
+  const [classificationFilter, setClassificationFilter] = React.useState<ClassificationFilter>("all");
+  const [sessionFilter, setSessionFilter] = React.useState("all");
+  const [selected, setSelected] = React.useState<EvidenceSample | null>(null);
+  const [sessionDetail, setSessionDetail] = React.useState<SessionDetail | null>(null);
+  const [isCorrecting, setIsCorrecting] = React.useState(false);
+
+  const samples = evidence?.samples ?? [];
+  const filtered = samples.filter((sample) => {
+    const classificationMatch = classificationFilter === "all" || sample.effective_classification === classificationFilter;
+    const sessionMatch = sessionFilter === "all" || String(sample.session_id) === sessionFilter;
+    return classificationMatch && sessionMatch;
+  });
+
+  React.useEffect(() => {
+    const sessionId = sessionFilter === "all" ? null : Number(sessionFilter);
+    if (!sessionId) {
+      setSessionDetail(null);
+      return;
+    }
+    backend.getSessionDetail(sessionId).then(setSessionDetail).catch(() => setSessionDetail(null));
+  }, [sessionFilter]);
+
+  async function correct(sample: EvidenceSample, classification: Classification) {
+    setIsCorrecting(true);
+    try {
+      const updated = await backend.correctSample(sample.id, classification);
+      setSelected(updated);
+      await refresh();
+      setMessage("已纠正这条记录");
+    } catch (error) {
+      setMessage(String(error));
+    } finally {
+      setIsCorrecting(false);
+    }
+  }
+
+  const stats = sessionDetail?.stats ?? evidence?.stats;
+
+  return (
+    <section className="evidencePage">
+      <div className="metricGrid evidenceMetrics">
+        <Metric label="采样记录" value={`${stats?.total_samples ?? 0}条`} />
+        <Metric label="人工纠正" value={`${stats?.corrected_count ?? 0}条`} />
+        <Metric label="截图证据" value={`${stats?.screenshot_count ?? 0}张`} />
+        <Metric label="当前筛选" value={`${filtered.length}条`} />
+      </div>
+
+      <div className="widePanel filtersPanel">
+        <label className="field">
+          分类
+          <select value={classificationFilter} onChange={(event) => setClassificationFilter(event.target.value as ClassificationFilter)}>
+            <option value="all">全部</option>
+            <option value="focused">专注</option>
+            <option value="distracted">分心</option>
+            <option value="idle">空闲</option>
+            <option value="unknown">观察中</option>
+          </select>
+        </label>
+        <label className="field">
+          会话
+          <select value={sessionFilter} onChange={(event) => setSessionFilter(event.target.value)}>
+            <option value="all">全部会话</option>
+            {(evidence?.sessions ?? []).map((session) => (
+              <option value={String(session.id)} key={session.id}>
+                {session.task} · {formatTime(session.started_at)}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <div className="widePanel timelinePanel">
+        <div className="panelHeader">
+          <h2>{sessionDetail ? sessionDetail.session.task : `${evidence?.date ?? "今天"} 证据`}</h2>
+          <span className="muted">{filtered.length} 条记录</span>
+        </div>
+        {filtered.length === 0 ? (
+          <div className="emptyState">今天还没有采样记录。</div>
+        ) : (
+          <div className="timelineList">
+            {filtered.map((sample) => (
+              <button className="timelineItem" key={sample.id} onClick={() => setSelected(sample)}>
+                <time>{formatTime(sample.captured_at)}</time>
+                <span className={`status mini ${sample.effective_classification}`}>{clsLabel(sample.effective_classification)}</span>
+                <div className="timelineMain">
+                  <strong>{sample.app_name || "未知应用"}</strong>
+                  <span>{sample.window_title || "无窗口标题"}</span>
+                  <small>{sample.reason} · {sample.topic || "未标注内容"}</small>
+                </div>
+                <ScreenshotThumb sample={sample} />
+                {sample.manual_classification && (
+                  <span className="correctedMark">
+                    <CheckCircle2 size={15} />
+                    已纠正
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {selected && (
+        <EvidenceDetail
+          sample={selected}
+          close={() => setSelected(null)}
+          correct={correct}
+          busy={isCorrecting}
+        />
+      )}
+      {message && <div className="toast">{message}</div>}
+    </section>
+  );
+}
+
+function ScreenshotThumb({ sample }: { sample: EvidenceSample }) {
+  const src = screenshotSrc(sample);
+  if (src) return <img className="thumb" src={src} alt="采样截图" />;
+  return (
+    <div className="thumb missingThumb">
+      <ImageOff size={18} />
+      <span>{sample.screenshot_path ? "截图已清理" : "无截图"}</span>
+    </div>
+  );
+}
+
+function EvidenceDetail({
+  sample,
+  close,
+  correct,
+  busy,
+}: {
+  sample: EvidenceSample;
+  close: () => void;
+  correct: (sample: EvidenceSample, classification: Classification) => Promise<void>;
+  busy: boolean;
+}) {
+  const src = screenshotSrc(sample);
+  return (
+    <div className="modalBackdrop" role="presentation" onClick={close}>
+      <section className="detailModal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+        <header className="detailHeader">
+          <div>
+            <p>{formatDateTime(sample.captured_at)}</p>
+            <h2>{sample.app_name || "未知应用"}</h2>
+          </div>
+          <button className="iconButton" title="关闭" onClick={close}>
+            <X size={18} />
+          </button>
+        </header>
+
+        {src ? (
+          <img className="previewImage" src={src} alt="采样截图预览" />
+        ) : (
+          <div className="previewMissing">
+            <ImageOff size={28} />
+            <span>{sample.screenshot_path ? "截图已清理" : "这条记录没有截图"}</span>
+          </div>
+        )}
+
+        <div className="detailGrid">
+          <DetailItem label="当前分类" value={clsLabel(sample.effective_classification)} />
+          <DetailItem label="原始分类" value={clsLabel(sample.classification)} />
+          <DetailItem label="置信度" value={`${Math.round(sample.confidence * 100)}%`} />
+          <DetailItem label="来源" value={sample.manual_classification ? "人工纠正" : "本地/AI 判断"} />
+        </div>
+
+        <div className="detailText">
+          <strong>窗口标题</strong>
+          <p>{sample.window_title || "无窗口标题"}</p>
+          <strong>判断原因</strong>
+          <p>{sample.reason}</p>
+          <strong>内容标签</strong>
+          <p>{sample.topic || "未标注内容"}</p>
+        </div>
+
+        <div className="correctionBar">
+          {(["focused", "distracted", "idle", "unknown"] as Classification[]).map((item) => (
+            <button
+              key={item}
+              disabled={busy}
+              className={sample.effective_classification === item ? "activeChoice" : ""}
+              onClick={() => correct(sample, item)}
+            >
+              {clsLabel(item)}
+            </button>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function DetailItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="detailItem">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
   );
 }
 

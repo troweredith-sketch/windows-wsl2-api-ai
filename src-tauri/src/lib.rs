@@ -11,7 +11,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 use chrono::Local;
 use db::Db;
-use models::{DailySummary, Settings, StudySession};
+use models::{Classification, DailySummary, EvidenceDay, EvidenceSample, SessionDetail, Settings, StudySession};
 use tauri::{AppHandle, Manager, State};
 
 struct RuntimeState {
@@ -40,6 +40,33 @@ fn save_settings(settings: Settings, state: State<'_, AppState>) -> Result<(), S
 #[tauri::command]
 fn get_today_summary(state: State<'_, AppState>) -> Result<DailySummary, String> {
   state.db.lock().map_err(lock_error)?.today_summary().map_err(error_string)
+}
+
+#[tauri::command]
+fn get_evidence_day(date: Option<String>, state: State<'_, AppState>) -> Result<EvidenceDay, String> {
+  state.db.lock().map_err(lock_error)?.evidence_day(date).map_err(error_string)
+}
+
+#[tauri::command]
+fn get_session_detail(session_id: i64, state: State<'_, AppState>) -> Result<SessionDetail, String> {
+  state
+    .db
+    .lock()
+    .map_err(lock_error)?
+    .session_detail(session_id)
+    .map_err(error_string)?
+    .ok_or_else(|| "学习会话不存在".to_string())
+}
+
+#[tauri::command]
+fn correct_sample(sample_id: i64, classification: Classification, state: State<'_, AppState>) -> Result<EvidenceSample, String> {
+  state
+    .db
+    .lock()
+    .map_err(lock_error)?
+    .correct_sample(sample_id, classification)
+    .map_err(error_string)?
+    .ok_or_else(|| "采样记录不存在".to_string())
 }
 
 #[tauri::command]
@@ -192,6 +219,9 @@ pub fn run() {
       get_settings,
       save_settings,
       get_today_summary,
+      get_evidence_day,
+      get_session_detail,
+      correct_sample,
       start_session,
       pause_session,
       resume_session,

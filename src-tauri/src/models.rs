@@ -33,7 +33,7 @@ pub enum PrivacyMode {
   LocalOnly,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Classification {
   Focused,
@@ -51,16 +51,20 @@ impl Classification {
       Self::Unknown => "unknown",
     }
   }
-}
 
-impl From<String> for Classification {
-  fn from(value: String) -> Self {
-    match value.as_str() {
+  pub fn from_str(value: &str) -> Self {
+    match value {
       "focused" => Self::Focused,
       "distracted" => Self::Distracted,
       "idle" => Self::Idle,
       _ => Self::Unknown,
     }
+  }
+}
+
+impl From<String> for Classification {
+  fn from(value: String) -> Self {
+    Self::from_str(&value)
   }
 }
 
@@ -85,6 +89,50 @@ pub struct SampleRecord {
   pub reason: String,
   pub topic: String,
   pub screenshot_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvidenceSample {
+  pub id: i64,
+  pub session_id: i64,
+  pub captured_at: String,
+  pub app_name: String,
+  pub window_title: String,
+  pub classification: Classification,
+  pub effective_classification: Classification,
+  pub manual_classification: Option<Classification>,
+  pub corrected_at: Option<String>,
+  pub confidence: f32,
+  pub reason: String,
+  pub topic: String,
+  pub screenshot_path: Option<String>,
+  pub screenshot_exists: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvidenceStats {
+  pub total_samples: u64,
+  pub focused_samples: u64,
+  pub distracted_samples: u64,
+  pub idle_samples: u64,
+  pub unknown_samples: u64,
+  pub corrected_count: u64,
+  pub screenshot_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvidenceDay {
+  pub date: String,
+  pub sessions: Vec<StudySession>,
+  pub samples: Vec<EvidenceSample>,
+  pub stats: EvidenceStats,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionDetail {
+  pub session: StudySession,
+  pub samples: Vec<EvidenceSample>,
+  pub stats: EvidenceStats,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

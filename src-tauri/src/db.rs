@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use chrono::Local;
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::models::{Classification, DailySummary, SampleRecord, Settings, StudySession};
+use crate::models::{Classification, DailySummary, EvidenceDay, EvidenceSample, EvidenceStats, SampleRecord, SessionDetail, Settings, StudySession};
 
 pub struct Db {
   conn: Connection,
@@ -44,6 +44,8 @@ impl Db {
         reason TEXT NOT NULL,
         topic TEXT NOT NULL,
         screenshot_path TEXT,
+        manual_classification TEXT,
+        corrected_at TEXT,
         FOREIGN KEY(session_id) REFERENCES study_sessions(id)
       );
 
@@ -59,10 +61,24 @@ impl Db {
       );
       "#,
     )?;
+    self.ensure_column("samples", "manual_classification", "TEXT")?;
+    self.ensure_column("samples", "corrected_at", "TEXT")?;
 
     if self.get_settings_raw()?.is_none() {
       self.save_settings(&Settings::default())?;
     }
+    Ok(())
+  }
+
+  fn ensure_column(&self, table: &str, column: &str, definition: &str) -> Result<()> {
+    let mut rows = self.conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = rows.query_map([], |row| row.get::<_, String>(1))?;
+    for name in columns {
+      if name? == column {
+        return Ok(());
+      }
+    }
+    self.conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"), [])?;
     Ok(())
   }
 
@@ -202,7 +218,7 @@ impl Db {
     let mut last_classification = Classification::Unknown;
 
     let mut sample_rows = self.conn.prepare(
-      "SELECT classification, topic FROM samples WHERE substr(captured_at, 1, 10) = ?1 ORDER BY captured_at ASC",
+      "SELECT COALESCE(manual_classification, classification), topic FROM samples WHERE substr(captured_at, 1, 10) = ?1 ORDER BY captured_at ASC",
     )?;
     let samples = sample_rows.query_map(params![date], |row| {
       Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -264,6 +280,62 @@ impl Db {
     Ok(())
   }
 
+  pub fn evidence_day(&self, date: Option<String>) -> Result<EvidenceDay> {
+    let date = date.unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
+    let mut session_rows = self.conn.prepare(
+      "SELECT id, task, status, started_at, ended_at FROM study_sessions WHERE substr(started_at, 1, 10) = ?1 ORDER BY started_at DESC",
+    )?;
+    let sessions = session_rows
+      .query_map(params![date], row_to_session)?
+      .collect::<std::result::Result<Vec<_>, _>>()?;
+    let samples = self.samples_for_date(&date)?;
+    let stats = evidence_stats(&samples);
+    Ok(EvidenceDay { date, sessions, samples, stats })
+  }
+
+  pub fn session_detail(&self, session_id: i64) -> Result<Option<SessionDetail>> {
+    let Some(session) = self.session_by_id(session_id)? else {
+      return Ok(None);
+    };
+    let samples = self.samples_for_session(session_id)?;
+    let stats = evidence_stats(&samples);
+    Ok(Some(SessionDetail { session, samples, stats }))
+  }
+
+  pub fn correct_sample(&self, sample_id: i64, classification: Classification) -> Result<Option<EvidenceSample>> {
+    let now = Local::now().to_rfc3339();
+    self.conn.execute(
+      "UPDATE samples SET manual_classification = ?1, corrected_at = ?2 WHERE id = ?3",
+      params![classification.as_str(), now, sample_id],
+    )?;
+    self.sample_by_id(sample_id)
+  }
+
+  fn samples_for_date(&self, date: &str) -> Result<Vec<EvidenceSample>> {
+    let mut rows = self.conn.prepare(EVIDENCE_SAMPLE_SELECT_DATE)?;
+    let samples = rows
+      .query_map(params![date], row_to_evidence_sample)?
+      .collect::<std::result::Result<Vec<_>, _>>()
+      .map_err(anyhow::Error::from)?;
+    Ok(samples)
+  }
+
+  fn samples_for_session(&self, session_id: i64) -> Result<Vec<EvidenceSample>> {
+    let mut rows = self.conn.prepare(EVIDENCE_SAMPLE_SELECT_SESSION)?;
+    let samples = rows
+      .query_map(params![session_id], row_to_evidence_sample)?
+      .collect::<std::result::Result<Vec<_>, _>>()
+      .map_err(anyhow::Error::from)?;
+    Ok(samples)
+  }
+
+  fn sample_by_id(&self, sample_id: i64) -> Result<Option<EvidenceSample>> {
+    self.conn
+      .query_row(EVIDENCE_SAMPLE_SELECT_ID, params![sample_id], row_to_evidence_sample)
+      .optional()
+      .map_err(Into::into)
+  }
+
   fn build_evaluation(&self, total: u64, focused: u64, distracted: u64, distractions: u64, topics: &[String]) -> String {
     if total == 0 {
       return "今天还没有学习记录。".to_string();
@@ -280,6 +352,59 @@ impl Db {
   }
 }
 
+const EVIDENCE_SAMPLE_SELECT_DATE: &str = "
+  SELECT id, session_id, captured_at, app_name, window_title, classification,
+    COALESCE(manual_classification, classification) AS effective_classification,
+    manual_classification, corrected_at, confidence, reason, topic, screenshot_path
+  FROM samples
+  WHERE substr(captured_at, 1, 10) = ?1
+  ORDER BY captured_at DESC
+";
+
+const EVIDENCE_SAMPLE_SELECT_SESSION: &str = "
+  SELECT id, session_id, captured_at, app_name, window_title, classification,
+    COALESCE(manual_classification, classification) AS effective_classification,
+    manual_classification, corrected_at, confidence, reason, topic, screenshot_path
+  FROM samples
+  WHERE session_id = ?1
+  ORDER BY captured_at DESC
+";
+
+const EVIDENCE_SAMPLE_SELECT_ID: &str = "
+  SELECT id, session_id, captured_at, app_name, window_title, classification,
+    COALESCE(manual_classification, classification) AS effective_classification,
+    manual_classification, corrected_at, confidence, reason, topic, screenshot_path
+  FROM samples
+  WHERE id = ?1
+";
+
+fn evidence_stats(samples: &[EvidenceSample]) -> EvidenceStats {
+  let mut stats = EvidenceStats {
+    total_samples: samples.len() as u64,
+    focused_samples: 0,
+    distracted_samples: 0,
+    idle_samples: 0,
+    unknown_samples: 0,
+    corrected_count: 0,
+    screenshot_count: 0,
+  };
+  for sample in samples {
+    match sample.effective_classification {
+      Classification::Focused => stats.focused_samples += 1,
+      Classification::Distracted => stats.distracted_samples += 1,
+      Classification::Idle => stats.idle_samples += 1,
+      Classification::Unknown => stats.unknown_samples += 1,
+    }
+    if sample.manual_classification.is_some() {
+      stats.corrected_count += 1;
+    }
+    if sample.screenshot_exists {
+      stats.screenshot_count += 1;
+    }
+  }
+  stats
+}
+
 fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<StudySession> {
   Ok(StudySession {
     id: row.get(0)?,
@@ -287,5 +412,27 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<StudySession> {
     status: row.get(2)?,
     started_at: row.get(3)?,
     ended_at: row.get(4)?,
+  })
+}
+
+fn row_to_evidence_sample(row: &rusqlite::Row<'_>) -> rusqlite::Result<EvidenceSample> {
+  let screenshot_path: Option<String> = row.get(12)?;
+  let screenshot_exists = screenshot_path.as_ref().is_some_and(|path| std::path::Path::new(path).exists());
+  let manual_classification: Option<String> = row.get(7)?;
+  Ok(EvidenceSample {
+    id: row.get(0)?,
+    session_id: row.get(1)?,
+    captured_at: row.get(2)?,
+    app_name: row.get(3)?,
+    window_title: row.get(4)?,
+    classification: Classification::from_str(row.get::<_, String>(5)?.as_str()),
+    effective_classification: Classification::from_str(row.get::<_, String>(6)?.as_str()),
+    manual_classification: manual_classification.map(|value| Classification::from_str(&value)),
+    corrected_at: row.get(8)?,
+    confidence: row.get(9)?,
+    reason: row.get(10)?,
+    topic: row.get(11)?,
+    screenshot_path,
+    screenshot_exists,
   })
 }
