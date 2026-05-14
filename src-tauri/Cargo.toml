@@ -1,0 +1,35 @@
+[package]
+name = "study-guard"
+version = "0.1.0"
+description = "Local-first AI study monitor"
+authors = ["MR"]
+edition = "2021"
+
+[lib]
+name = "study_guard_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.1", features = [] }
+
+[dependencies]
+anyhow = "1.0"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+image = { version = "0.24", default-features = false, features = ["jpeg", "png"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+screenshots = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tauri = { version = "2.11.1", features = [] }
+thiserror = "2.0"
+tokio = { version = "1.42", features = ["rt", "macros"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+  "Win32_Foundation",
+  "Win32_System_ProcessStatus",
+  "Win32_System_Threading",
+  "Win32_UI_WindowsAndMessaging"
+] }
