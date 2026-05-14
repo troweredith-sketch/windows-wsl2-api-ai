@@ -30,7 +30,9 @@ impl Db {
         task TEXT NOT NULL,
         status TEXT NOT NULL,
         started_at TEXT NOT NULL,
-        ended_at TEXT
+        ended_at TEXT,
+        paused_at TEXT,
+        paused_seconds INTEGER NOT NULL DEFAULT 0
       );
 
       CREATE TABLE IF NOT EXISTS samples (
@@ -46,6 +48,7 @@ impl Db {
         screenshot_path TEXT,
         manual_classification TEXT,
         corrected_at TEXT,
+        ai_error TEXT,
         FOREIGN KEY(session_id) REFERENCES study_sessions(id)
       );
 
@@ -61,8 +64,11 @@ impl Db {
       );
       "#,
     )?;
+    self.ensure_column("study_sessions", "paused_at", "TEXT")?;
+    self.ensure_column("study_sessions", "paused_seconds", "INTEGER NOT NULL DEFAULT 0")?;
     self.ensure_column("samples", "manual_classification", "TEXT")?;
     self.ensure_column("samples", "corrected_at", "TEXT")?;
+    self.ensure_column("samples", "ai_error", "TEXT")?;
 
     if self.get_settings_raw()?.is_none() {
       self.save_settings(&Settings::default())?;
@@ -95,15 +101,37 @@ impl Db {
       status: "running".to_string(),
       started_at: now,
       ended_at: None,
+      paused_at: None,
+      paused_seconds: 0,
     })
   }
 
-  pub fn set_active_status(&self, status: &str) -> Result<Option<StudySession>> {
+  pub fn pause_active_session(&self) -> Result<Option<StudySession>> {
     let session = self.active_session()?;
     if let Some(session) = session {
+      if session.status != "running" {
+        return self.session_by_id(session.id);
+      }
+      let now = Local::now().to_rfc3339();
       self.conn.execute(
-        "UPDATE study_sessions SET status = ?1 WHERE id = ?2",
-        params![status, session.id],
+        "UPDATE study_sessions SET status = 'paused', paused_at = ?1 WHERE id = ?2",
+        params![now, session.id],
+      )?;
+      return self.session_by_id(session.id);
+    }
+    Ok(None)
+  }
+
+  pub fn resume_active_session(&self) -> Result<Option<StudySession>> {
+    let session = self.active_session()?;
+    if let Some(session) = session {
+      if session.status != "paused" {
+        return self.session_by_id(session.id);
+      }
+      let paused_seconds = session.paused_seconds + current_pause_seconds(&session)?;
+      self.conn.execute(
+        "UPDATE study_sessions SET status = 'running', paused_at = NULL, paused_seconds = ?1 WHERE id = ?2",
+        params![paused_seconds, session.id],
       )?;
       return self.session_by_id(session.id);
     }
@@ -114,9 +142,10 @@ impl Db {
     let session = self.active_session()?;
     if let Some(session) = session {
       let now = Local::now().to_rfc3339();
+      let paused_seconds = session.paused_seconds + current_pause_seconds(&session)?;
       self.conn.execute(
-        "UPDATE study_sessions SET status = 'ended', ended_at = ?1 WHERE id = ?2",
-        params![now, session.id],
+        "UPDATE study_sessions SET status = 'ended', ended_at = ?1, paused_at = NULL, paused_seconds = ?2 WHERE id = ?3",
+        params![now, paused_seconds, session.id],
       )?;
       return self.session_by_id(session.id);
     }
@@ -126,7 +155,7 @@ impl Db {
   pub fn active_session(&self) -> Result<Option<StudySession>> {
     self.conn
       .query_row(
-        "SELECT id, task, status, started_at, ended_at FROM study_sessions WHERE status IN ('running', 'paused') ORDER BY id DESC LIMIT 1",
+        "SELECT id, task, status, started_at, ended_at, paused_at, paused_seconds FROM study_sessions WHERE status IN ('running', 'paused') ORDER BY id DESC LIMIT 1",
         [],
         row_to_session,
       )
@@ -137,7 +166,7 @@ impl Db {
   pub fn session_by_id(&self, id: i64) -> Result<Option<StudySession>> {
     self.conn
       .query_row(
-        "SELECT id, task, status, started_at, ended_at FROM study_sessions WHERE id = ?1",
+        "SELECT id, task, status, started_at, ended_at, paused_at, paused_seconds FROM study_sessions WHERE id = ?1",
         params![id],
         row_to_session,
       )
@@ -147,8 +176,8 @@ impl Db {
 
   pub fn insert_sample(&self, sample: &SampleRecord) -> Result<()> {
     self.conn.execute(
-      "INSERT INTO samples (session_id, captured_at, app_name, window_title, classification, confidence, reason, topic, screenshot_path)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+      "INSERT INTO samples (session_id, captured_at, app_name, window_title, classification, confidence, reason, topic, screenshot_path, ai_error)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
       params![
         sample.session_id,
         sample.captured_at,
@@ -158,7 +187,8 @@ impl Db {
         sample.confidence,
         sample.reason,
         sample.topic,
-        sample.screenshot_path
+        sample.screenshot_path,
+        sample.ai_error
       ],
     )?;
     Ok(())
@@ -196,19 +226,19 @@ impl Db {
 
     let mut total_seconds = 0_u64;
     let mut rows = self.conn.prepare(
-      "SELECT started_at, ended_at FROM study_sessions WHERE substr(started_at, 1, 10) = ?1",
+      "SELECT id, task, status, started_at, ended_at, paused_at, paused_seconds FROM study_sessions WHERE substr(started_at, 1, 10) = ?1",
     )?;
-    let sessions = rows.query_map(params![date], |row| {
-      Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
-    })?;
+    let sessions = rows.query_map(params![date], row_to_session)?;
     for session in sessions {
-      let (started_at, ended_at) = session?;
-      let start = chrono::DateTime::parse_from_rfc3339(&started_at)?;
-      let end = match ended_at {
-        Some(value) => chrono::DateTime::parse_from_rfc3339(&value)?,
+      let session = session?;
+      let start = chrono::DateTime::parse_from_rfc3339(&session.started_at)?;
+      let end = match &session.ended_at {
+        Some(value) => chrono::DateTime::parse_from_rfc3339(value)?,
         None => Local::now().fixed_offset(),
       };
-      total_seconds += (end - start).num_seconds().max(0) as u64;
+      let elapsed = (end - start).num_seconds().max(0) as u64;
+      let paused = session.paused_seconds + current_pause_seconds(&session)?;
+      total_seconds += elapsed.saturating_sub(paused);
     }
 
     let mut counts: HashMap<String, u64> = HashMap::new();
@@ -283,7 +313,7 @@ impl Db {
   pub fn evidence_day(&self, date: Option<String>) -> Result<EvidenceDay> {
     let date = date.unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
     let mut session_rows = self.conn.prepare(
-      "SELECT id, task, status, started_at, ended_at FROM study_sessions WHERE substr(started_at, 1, 10) = ?1 ORDER BY started_at DESC",
+      "SELECT id, task, status, started_at, ended_at, paused_at, paused_seconds FROM study_sessions WHERE substr(started_at, 1, 10) = ?1 ORDER BY started_at DESC",
     )?;
     let sessions = session_rows
       .query_map(params![date], row_to_session)?
@@ -355,7 +385,7 @@ impl Db {
 const EVIDENCE_SAMPLE_SELECT_DATE: &str = "
   SELECT id, session_id, captured_at, app_name, window_title, classification,
     COALESCE(manual_classification, classification) AS effective_classification,
-    manual_classification, corrected_at, confidence, reason, topic, screenshot_path
+    manual_classification, corrected_at, confidence, reason, topic, screenshot_path, ai_error
   FROM samples
   WHERE substr(captured_at, 1, 10) = ?1
   ORDER BY captured_at DESC
@@ -364,7 +394,7 @@ const EVIDENCE_SAMPLE_SELECT_DATE: &str = "
 const EVIDENCE_SAMPLE_SELECT_SESSION: &str = "
   SELECT id, session_id, captured_at, app_name, window_title, classification,
     COALESCE(manual_classification, classification) AS effective_classification,
-    manual_classification, corrected_at, confidence, reason, topic, screenshot_path
+    manual_classification, corrected_at, confidence, reason, topic, screenshot_path, ai_error
   FROM samples
   WHERE session_id = ?1
   ORDER BY captured_at DESC
@@ -373,7 +403,7 @@ const EVIDENCE_SAMPLE_SELECT_SESSION: &str = "
 const EVIDENCE_SAMPLE_SELECT_ID: &str = "
   SELECT id, session_id, captured_at, app_name, window_title, classification,
     COALESCE(manual_classification, classification) AS effective_classification,
-    manual_classification, corrected_at, confidence, reason, topic, screenshot_path
+    manual_classification, corrected_at, confidence, reason, topic, screenshot_path, ai_error
   FROM samples
   WHERE id = ?1
 ";
@@ -412,6 +442,8 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<StudySession> {
     status: row.get(2)?,
     started_at: row.get(3)?,
     ended_at: row.get(4)?,
+    paused_at: row.get(5)?,
+    paused_seconds: row.get(6)?,
   })
 }
 
@@ -434,5 +466,17 @@ fn row_to_evidence_sample(row: &rusqlite::Row<'_>) -> rusqlite::Result<EvidenceS
     topic: row.get(11)?,
     screenshot_path,
     screenshot_exists,
+    ai_error: row.get(13)?,
   })
+}
+
+fn current_pause_seconds(session: &StudySession) -> Result<u64> {
+  if session.status != "paused" {
+    return Ok(0);
+  }
+  let Some(paused_at) = &session.paused_at else {
+    return Ok(0);
+  };
+  let paused_at = chrono::DateTime::parse_from_rfc3339(paused_at)?;
+  Ok((Local::now().fixed_offset() - paused_at).num_seconds().max(0) as u64)
 }

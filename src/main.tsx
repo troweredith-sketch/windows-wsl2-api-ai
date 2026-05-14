@@ -102,7 +102,7 @@ function App() {
 
   React.useEffect(() => {
     refresh().catch((error) => setMessage(String(error)));
-    const id = window.setInterval(() => refresh().catch(() => undefined), 5000);
+    const id = window.setInterval(() => refresh().catch(() => undefined), 1000);
     return () => window.clearInterval(id);
   }, [refresh]);
 
@@ -417,7 +417,7 @@ function EvidenceView({
                 <div className="timelineMain">
                   <strong>{sample.app_name || "未知应用"}</strong>
                   <span>{sample.window_title || "无窗口标题"}</span>
-                  <small>{sample.reason} · {sample.topic || "未标注内容"}</small>
+                  <small>{sample.ai_error ? `AI 调用失败：${sample.ai_error}` : `${sample.reason} · ${sample.topic || "未标注内容"}`}</small>
                 </div>
                 <ScreenshotThumb sample={sample} />
                 {sample.manual_classification && (
@@ -494,7 +494,7 @@ function EvidenceDetail({
           <DetailItem label="当前分类" value={clsLabel(sample.effective_classification)} />
           <DetailItem label="原始分类" value={clsLabel(sample.classification)} />
           <DetailItem label="置信度" value={`${Math.round(sample.confidence * 100)}%`} />
-          <DetailItem label="来源" value={sample.manual_classification ? "人工纠正" : "本地/AI 判断"} />
+          <DetailItem label="来源" value={sample.ai_error ? "AI 失败后本地判断" : sample.manual_classification ? "人工纠正" : "本地/AI 判断"} />
         </div>
 
         <div className="detailText">
@@ -502,6 +502,12 @@ function EvidenceDetail({
           <p>{sample.window_title || "无窗口标题"}</p>
           <strong>判断原因</strong>
           <p>{sample.reason}</p>
+          {sample.ai_error && (
+            <>
+              <strong>AI 错误</strong>
+              <p>{sample.ai_error}</p>
+            </>
+          )}
           <strong>内容标签</strong>
           <p>{sample.topic || "未标注内容"}</p>
         </div>
@@ -657,9 +663,21 @@ function SettingsView({
         <span>1. 填 API Key；2. 填兼容 Responses API 的地址，例如 https://api.openai.com/v1 或第三方 /v1 地址；3. 填模型名；4. 打开 AI 分析，并保持隐私模式不是“完全本地”。</span>
       </div>
 
-      <button className="primary save" disabled={busy} onClick={save}>
-        保存设置
-      </button>
+      <div className="settingsActions full">
+        <button className="primary save" disabled={busy} onClick={save}>
+          保存设置
+        </button>
+        <button disabled={busy} onClick={async () => {
+          try {
+            const result = await backend.testAiSettings(settings);
+            window.alert(result.message);
+          } catch (error) {
+            window.alert(String(error));
+          }
+        }}>
+          测试 AI
+        </button>
+      </div>
       {message && <div className="toast full">{message}</div>}
     </section>
   );

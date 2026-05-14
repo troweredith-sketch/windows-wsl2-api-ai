@@ -12,7 +12,7 @@ use anyhow::{anyhow, Context, Result};
 use base64::Engine;
 use chrono::Local;
 use db::Db;
-use models::{default_openai_api_base_url, Classification, DailySummary, EvidenceDay, EvidenceSample, SessionDetail, Settings, StudySession};
+use models::{default_openai_api_base_url, AiTestResult, Classification, DailySummary, EvidenceDay, EvidenceSample, SessionDetail, Settings, StudySession, WindowInfo};
 use tauri::{AppHandle, Manager, State};
 
 struct RuntimeState {
@@ -76,6 +76,30 @@ fn correct_sample(sample_id: i64, classification: Classification, state: State<'
 }
 
 #[tauri::command]
+fn test_ai_settings(settings: Settings) -> Result<AiTestResult, String> {
+  let analyzer = ai::AiAnalyzer::new();
+  let window = WindowInfo {
+    app_name: "Study Guard".to_string(),
+    window_title: "AI 设置测试".to_string(),
+  };
+  let result = tauri::async_runtime::block_on(analyzer.analyze("测试学习任务", &settings, &window, None));
+  match result {
+    Ok(Some(decision)) => Ok(AiTestResult {
+      ok: true,
+      message: format!("AI 调用成功：{}，置信度 {}%", decision.reason, (decision.confidence * 100.0).round() as u32),
+    }),
+    Ok(None) => Ok(AiTestResult {
+      ok: false,
+      message: "AI 未调用：请确认已开启 AI、填写 API Key，且隐私模式不是完全本地。".to_string(),
+    }),
+    Err(error) => Ok(AiTestResult {
+      ok: false,
+      message: format!("{error:#}"),
+    }),
+  }
+}
+
+#[tauri::command]
 fn get_screenshot_data_url(path: String, state: State<'_, AppState>) -> Result<Option<String>, String> {
   let db = state.db.lock().map_err(lock_error)?;
   let screenshots_dir = db.data_dir.join("screenshots");
@@ -125,12 +149,12 @@ fn start_session(task: String, app: AppHandle, state: State<'_, AppState>) -> Re
 
 #[tauri::command]
 fn pause_session(state: State<'_, AppState>) -> Result<Option<StudySession>, String> {
-  state.db.lock().map_err(lock_error)?.set_active_status("paused").map_err(error_string)
+  state.db.lock().map_err(lock_error)?.pause_active_session().map_err(error_string)
 }
 
 #[tauri::command]
 fn resume_session(state: State<'_, AppState>) -> Result<Option<StudySession>, String> {
-  state.db.lock().map_err(lock_error)?.set_active_status("running").map_err(error_string)
+  state.db.lock().map_err(lock_error)?.resume_active_session().map_err(error_string)
 }
 
 #[tauri::command]
@@ -200,12 +224,19 @@ fn sample_once(state: &AppState, session_id: i64, task: &str) -> Result<()> {
   }
 
   let needs_ai = matches!(local.classification, models::Classification::Unknown) || local.confidence < 0.7 || settings.privacy_mode == models::PrivacyMode::CloudEnhanced;
-  let ai_decision = if needs_ai {
+  let (ai_decision, ai_error) = if needs_ai {
     let analyzer = ai::AiAnalyzer::new();
     let data_url = screenshot_data_url.as_deref();
-    tauri::async_runtime::block_on(analyzer.analyze(task, &settings, &window, data_url)).ok().flatten()
+    match tauri::async_runtime::block_on(analyzer.analyze(task, &settings, &window, data_url)) {
+      Ok(decision) => (decision, None),
+      Err(error) => {
+        let message = format!("{error:#}");
+        eprintln!("AI analyze failed: {message}");
+        (None, Some(message))
+      }
+    }
   } else {
-    None
+    (None, None)
   };
   let decision = ai_decision.unwrap_or(local);
   let sample = models::SampleRecord {
@@ -219,6 +250,7 @@ fn sample_once(state: &AppState, session_id: i64, task: &str) -> Result<()> {
     reason: decision.reason,
     topic: decision.topic,
     screenshot_path,
+    ai_error,
   };
 
   let db = state.db.lock().map_err(|_| anyhow!("database lock poisoned"))?;
@@ -252,6 +284,7 @@ pub fn run() {
       get_evidence_day,
       get_session_detail,
       correct_sample,
+      test_ai_settings,
       get_screenshot_data_url,
       start_session,
       pause_session,

@@ -82,6 +82,8 @@ pub struct StudySession {
   pub status: String,
   pub started_at: String,
   pub ended_at: Option<String>,
+  pub paused_at: Option<String>,
+  pub paused_seconds: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +98,7 @@ pub struct SampleRecord {
   pub reason: String,
   pub topic: String,
   pub screenshot_path: Option<String>,
+  pub ai_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,6 +117,13 @@ pub struct EvidenceSample {
   pub topic: String,
   pub screenshot_path: Option<String>,
   pub screenshot_exists: bool,
+  pub ai_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiTestResult {
+  pub ok: bool,
+  pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

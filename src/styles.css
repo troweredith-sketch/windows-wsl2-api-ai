@@ -354,6 +354,12 @@ select:focus {
   width: max-content;
 }
 
+.settingsActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
 .toast {
   color: #254232;
   background: #e7f2e8;

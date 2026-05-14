@@ -38,6 +38,7 @@ export type EvidenceSample = {
   topic: string;
   screenshot_path?: string | null;
   screenshot_exists: boolean;
+  ai_error?: string | null;
 };
 
 export type EvidenceStats = {
@@ -129,6 +130,7 @@ export const backend = {
   getScreenshotDataUrl: (path: string) => call<string | null>("get_screenshot_data_url", { path }, null),
   getSettings: () => call("get_settings", undefined, fallbackSettings),
   saveSettings: (settings: unknown) => call("save_settings", { settings }),
+  testAiSettings: (settings: unknown) => call<{ ok: boolean; message: string }>("test_ai_settings", { settings }),
   startSession: (task: string) => call("start_session", { task }),
   pauseSession: () => call("pause_session"),
   resumeSession: () => call("resume_session"),
